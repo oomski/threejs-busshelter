@@ -2,6 +2,7 @@ import * as THREE from "three";
 import getLayer from "./getLayer.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 
 const w = window.innerWidth;
@@ -16,7 +17,11 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(w, h);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 0.6;
+
+// ensure correct color/output encoding and physically correct lights
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.physicallyCorrectLights = true;
 
 // ensure clear color is fully transparent
 renderer.setClearColor(0x000000, 0);
@@ -37,10 +42,41 @@ const busshelterGlb = await gltfLoader.loadAsync(
 );
 const busshelter = busshelterGlb.scene;
 
+// create a small environment for proper metal/roughness reflections
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+pmremGenerator.compileEquirectangularShader();
+const envMap = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environment = envMap;
+pmremGenerator.dispose();
+
 busshelter.traverse((child) => {
   if (child.isMesh) {
     child.castShadow = true;
     child.receiveShadow = true;
+
+    // ensure material texture encodings are correct for PBR
+    const fixMaterial = (mat) => {
+      if (!mat) return;
+      if (Array.isArray(mat)) { mat.forEach(fixMaterial); return; }
+
+      // color/intensity maps should be sRGB
+      ["map", "emissiveMap", "aoMap", "lightMap", "environmentMap"].forEach((k) => {
+        if (mat[k] && mat[k].isTexture) mat[k].encoding = THREE.sRGBEncoding;
+      });
+
+      // non-color and data maps should stay linear
+      ["metalnessMap", "roughnessMap", "normalMap", "bumpMap", "displacementMap", "alphaMap"].forEach((k) => {
+        if (mat[k] && mat[k].isTexture) mat[k].encoding = THREE.LinearEncoding;
+      });
+
+      // ensure the material updates and uses environment reflections
+      if (mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
+        mat.envMap = scene.environment;
+        mat.needsUpdate = true;
+      }
+    };
+
+    fixMaterial(child.material);
   }
 });
 
@@ -69,15 +105,15 @@ busshelter.position.sub(center); // move model so its center is at (0,0,0) relat
 pivot.add(busshelter);
 
 // start rotated 270 degrees around Y
-pivot.rotation.y = 1 * Math.PI / 2; // 270deg
+pivot.rotation.y = -0.7 * Math.PI / 2; // 270deg
 
-pivot.rotation.z = 0.08 * Math.PI / 2; // 270deg
+// pivot.rotation.z = 0.08 * Math.PI / 2; // 270deg
 
 // bounce setup: 180° total (min = 270° - 180° = 90°, max = 270°)
 const clock = new THREE.Clock();
 const rotationSpeed = 0.3; // radians per second (~0.005 per frame at 60fps)
 const startAngle = pivot.rotation.y; // 270deg
-const fullRange = 0.8 * Math.PI; // 180° in radians
+const fullRange = 0.5 * Math.PI; // 180° in radians
 const minAngle = startAngle - fullRange; // 90deg
 const maxAngle = startAngle; // 270deg
 let rotationDirection = -1; // start moving away from 270° in the same direction as before
